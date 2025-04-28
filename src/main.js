@@ -11,7 +11,7 @@ document.querySelector("#app").innerHTML = `
 
 const canvas = document.querySelector("canvas");
 const context = canvas.getContext("webgpu");
-let presentationFormat = null
+let presentationFormat = null;
 let device = null;
 
 console.log(navigator.gpu, "navigator.gpu");
@@ -34,7 +34,7 @@ getDevice()
     console.log(loadedDevice, "device");
 
     device = loadedDevice;
-    presentationFormat = navigator.gpu.getPreferredCanvasFormat()
+    presentationFormat = navigator.gpu.getPreferredCanvasFormat();
     setContextConfig();
 
     const module = initModule(device);
@@ -60,11 +60,28 @@ function initModule(device) {
           vec2f( 0.5, -0.5)   // bottom right
         );
  
-        return vec4f(pos[vertexIndex], 0.0, 1.0);
+        return vec4f(pos[vertexIndex], 1.0, 1.0);
       }
  
       @fragment fn fs() -> @location(0) vec4f {
         return vec4f(1.0, 0.0, 0.0, 1.0);
+      }
+    `,
+  });
+}
+
+function initComputedModule(device) {
+  return device.createShaderModule({
+    label: "doubling compute module",
+    // language=wgsl
+    code: `
+      @group(0) @binding(0) var<storage, read_write> data: array<f32>;
+ 
+      @compute @workgroup_size(1) fn computeSomething(
+        @builtin(global_invocation_id) id: vec3u
+      ) {
+        let i = id.x;
+        data[i] = data[i] * 2.0;
       }
     `,
   });
@@ -79,7 +96,7 @@ function initPipeline(device, module) {
     },
     fragment: {
       module,
-      // Разобраться для чего
+      // TODO: Разобраться для чего
       targets: [{ format: presentationFormat }],
     },
   });
@@ -115,7 +132,7 @@ function render(device, pipeline) {
   // make a render pass encoder to encode render specific commands
   const pass = encoder.beginRenderPass(renderPassDescriptor);
   pass.setPipeline(pipeline);
-  pass.draw(3); // call our vertex shader 3 times
+  pass.draw(3); // Вызываем vertex shader 3 раза
   pass.end();
 
   const commandBuffer = encoder.finish();
