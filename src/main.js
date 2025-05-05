@@ -38,7 +38,7 @@ getDevice()
     setContextConfig();
 
     const module = initModule(device);
-    const moduleCompute = initComputedModule(device)
+    const moduleCompute = initComputedModule(device);
 
     const pipelineRender = initRenderPipeline(device, module);
     const pipelineCompute = initComputePipeline(device, moduleCompute);
@@ -94,10 +94,10 @@ function initComputedModule(device) {
 function initComputePipeline(device, module) {
   return device.createComputePipeline({
     label: "doubling compute module",
-    layout: 'auto',
+    layout: "auto",
     // language=wgsl
     compute: {
-      module
+      module,
     },
   });
 }
@@ -158,39 +158,42 @@ async function renderCompute(device, pipeline) {
   const input = new Float32Array([1, 3, 5]);
 
   const workBuffer = device.createBuffer({
-    label: 'work buffer',
+    label: "work buffer",
     size: input.byteLength,
     // Разробраться в usage?
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    // Как бы указываем, что мы можем делать с буфером
+    usage:
+      GPUBufferUsage.STORAGE | // Возможность хранить данные?
+      GPUBufferUsage.COPY_SRC | // Копировать данные из буфера
+      GPUBufferUsage.COPY_DST, // Копировать данные в этот буфер
   });
 
   device.queue.writeBuffer(workBuffer, 0, input);
 
   const resultBuffer = device.createBuffer({
-    label: 'result buffer',
+    label: "result buffer",
     size: input.byteLength,
     usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
   });
 
   const bindGroup = device.createBindGroup({
-    label: 'bindGroup for work buffer',
+    label: "bindGroup for work buffer",
     layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: workBuffer } },
-    ],
+    entries: [{ binding: 0, resource: { buffer: workBuffer } }],
   });
 
   const encoder = device.createCommandEncoder({
-    label: 'doubling encoder',
+    label: "doubling encoder",
   });
   const pass = encoder.beginComputePass({
-    label: 'doubling compute pass',
+    label: "doubling compute pass",
   });
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bindGroup);
   pass.dispatchWorkgroups(input.length);
   pass.end();
 
+  // https://developer.mozilla.org/en-US/docs/Web/API/GPUCommandEncoder/copyBufferToBuffer
   encoder.copyBufferToBuffer(workBuffer, 0, resultBuffer, 0, resultBuffer.size);
 
   const commandBuffer = encoder.finish();
@@ -198,11 +201,13 @@ async function renderCompute(device, pipeline) {
 
   await resultBuffer.mapAsync(GPUMapMode.READ);
   const result = new Float32Array(resultBuffer.getMappedRange().slice());
+  console.log(resultBuffer, 'resultBuffer')
+
+  // После unmap данные не доступны
   resultBuffer.unmap();
 
-  console.log('input', input);
-  console.log('result', result);
+  console.log("input", input);
+  console.log("result", result);
 }
-
 
 // setupCounter(document.querySelector('#counter'))
