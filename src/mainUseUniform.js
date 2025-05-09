@@ -1,3 +1,14 @@
+const rand = (min, max) => {
+  if (min === undefined) {
+    min = 0;
+    max = 1;
+  } else if (max === undefined) {
+    max = min;
+    min = 0;
+  }
+  return min + Math.random() * (max - min);
+};
+
 async function mainUseUniform() {
   const adapter = await navigator.gpu?.requestAdapter();
   const device = await adapter?.requestDevice();
@@ -68,27 +79,47 @@ async function mainUseUniform() {
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  console.log()
-
   // create a typedarray to hold the values for the uniforms in JavaScript
   const uniformValues = new Float32Array(uniformBufferSize / 4);
-  console.log(uniformValues, 'uniformValues')
 
   // offsets to the various uniform values in float32 indices
   const kColorOffset = 0;
   const kScaleOffset = 4;
   const kOffsetOffset = 6;
 
+  const kNumObjects = 100;
+  const objectInfos = [];
+
   uniformValues.set([0, 1, 0, 1], kColorOffset);        // set the color
   uniformValues.set([-0.5, -0.25], kOffsetOffset);      // set the offset
 
-  const bindGroup = device.createBindGroup({
-    label: 'triangle bind group',
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: uniformBuffer }},
-    ],
-  });
+  for (let i = 0; i < kNumObjects; ++i) {
+    const uniformBuffer = device.createBuffer({
+      label: `uniforms for obj: ${i}`,
+      size: uniformBufferSize,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // create a typedarray to hold the values for the uniforms in JavaScript
+    const uniformValues = new Float32Array(uniformBufferSize / 4);
+    uniformValues.set([rand(), rand(), rand(), 1], kColorOffset);        // set the color
+    uniformValues.set([rand(-0.9, 0.9), rand(-0.9, 0.9)], kOffsetOffset);      // set the offset
+
+    const bindGroup = device.createBindGroup({
+      label: `bind group for obj: ${i}`,
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: uniformBuffer }},
+      ],
+    });
+
+    objectInfos.push({
+      scale: rand(0.2, 0.5),
+      uniformBuffer,
+      uniformValues,
+      bindGroup,
+    });
+  }
 
   const renderPassDescriptor = {
     label: 'our basic canvas renderPass',
@@ -103,13 +134,6 @@ async function mainUseUniform() {
   };
 
   function render() {
-    // Set the uniform values in our JavaScript side Float32Array
-    const aspect = canvas.width / canvas.height;
-    uniformValues.set([0.5 / aspect, 0.5], kScaleOffset); // set the scale
-
-    // copy the values from JavaScript to the GPU
-    device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
-
     // Get the current texture from the canvas context and
     // set it as the texture to render to.
     renderPassDescriptor.colorAttachments[0].view =
@@ -118,8 +142,17 @@ async function mainUseUniform() {
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass(renderPassDescriptor);
     pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.draw(3);  // call our vertex shader 3 times
+
+    const aspect = canvas.width / canvas.height;
+
+    console.log(objectInfos, 'objectInfos')
+
+    for (const {scale, bindGroup, uniformBuffer, uniformValues} of objectInfos) {
+      uniformValues.set([scale / aspect, scale], kScaleOffset); // set the scale
+      device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(3);  // call our vertex shader 3 times
+    }
     pass.end();
 
     const commandBuffer = encoder.finish();
