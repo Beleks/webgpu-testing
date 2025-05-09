@@ -1,4 +1,4 @@
-import mainUseUniform from './mainUseUniform.js'
+import mainUseUniform from "./mainUseUniform.js";
 
 async function main() {
   const adapter = await navigator.gpu?.requestAdapter();
@@ -98,7 +98,6 @@ async function main() {
       targets: [{ format: presentationFormat }],
     },
   });
-
 
   const renderPassDescriptor = {
     label: "our basic canvas renderPass",
