@@ -43,15 +43,21 @@ getDevice()
     const pipelineRender = initRenderPipeline(device, module);
     const pipelineCompute = initComputePipeline(device, moduleCompute);
 
-    const observer = new ResizeObserver(entries => {
+    const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const canvas = entry.target;
         const width = entry.contentBoxSize[0].inlineSize;
         const height = entry.contentBoxSize[0].blockSize;
-        canvas.width = Math.max(1, Math.min(width, device.limits.maxTextureDimension2D));
-        canvas.height = Math.max(1, Math.min(height, device.limits.maxTextureDimension2D));
+        canvas.width = Math.max(
+          1,
+          Math.min(width, device.limits.maxTextureDimension2D),
+        );
+        canvas.height = Math.max(
+          1,
+          Math.min(height, device.limits.maxTextureDimension2D),
+        );
       }
-      console.log('RE-RENDER')
+      console.log("RE-RENDER");
       render(device, pipelineRender);
     });
     observer.observe(canvas);
@@ -64,7 +70,7 @@ getDevice()
   });
 
 const vsModule = device.createShaderModule({
-  label: 'hardcoded triangle',
+  label: "hardcoded triangle",
   // language=wgsl
   code: `
       struct OurVertexShaderOutput {
@@ -88,7 +94,7 @@ const vsModule = device.createShaderModule({
 });
 
 const fsModule = device.createShaderModule({
-  label: 'checkerboard',
+  label: "checkerboard",
   // language=wgsl
   code: `
       @fragment fn fs(@builtin(position) pixelPosition: vec4f) -> @location(0) vec4f {
@@ -102,7 +108,6 @@ const fsModule = device.createShaderModule({
       }
     `,
 });
-
 
 function initModule(device) {
   return device.createShaderModule({
@@ -278,7 +283,7 @@ async function renderCompute(device, pipeline) {
 
   await resultBuffer.mapAsync(GPUMapMode.READ);
   const result = new Float32Array(resultBuffer.getMappedRange().slice());
-  console.log(resultBuffer, 'resultBuffer')
+  console.log(resultBuffer, "resultBuffer");
 
   // После unmap данные не доступны
   resultBuffer.unmap();
