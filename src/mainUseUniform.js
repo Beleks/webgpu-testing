@@ -42,31 +42,24 @@ async function mainUseUniform() {
         position: vec2f,
       }
       
-//      struct VSOutput {
-//        @builtin(position) position: vec4f,
-//        @location(0) color: vec4f,
-//      }
+      struct VSOutput {
+        @builtin(position) position: vec4f,
+        @location(0) color: vec4f,
+      }
 
       @group(0) @binding(0) var<storage, read> ourStructs: array<OurStruct>;
       @group(0) @binding(1) var<storage, read> otherStructs: array<OtherStruct>;
-//      @group(0) @binding(3) var<storage, read> pos: array<Vertex>;
-      
+      @group(0) @binding(2) var<storage, read> pos: array<Vertex>;
 
       @vertex fn vs(
         @builtin(vertex_index) vertexIndex : u32,
         @builtin(instance_index) instanceIndex : u32
       ) -> VSOutput {
-        let pos = array(
-          vec2f( 0.0,  0.5),  // top center
-          vec2f(-0.5, -0.5),  // bottom left
-          vec2f( 0.5, -0.5)   // bottom right
-        );
-
         let otherStruct = otherStructs[instanceIndex];
         let ourStruct = ourStructs[instanceIndex];
-        
+
         var vsOut: VSOutput;
-        vsOut.position = vec4f(pos[vertexIndex] * otherStruct.scale + ourStruct.offset, 0.0, 1.0);
+        vsOut.position = vec4f(pos[vertexIndex].position * otherStruct.scale + ourStruct.offset, 0.0, 1.0);
         vsOut.color = ourStruct.color;
         return vsOut;
       }
@@ -90,6 +83,7 @@ async function mainUseUniform() {
   });
 
   const kNumObjects = 100;
+  const objectInfos = [];
 
   // create 2 storage buffers
   const staticStorageUnitSize =
@@ -110,9 +104,8 @@ async function mainUseUniform() {
     label: `changing storage for objects`,
     size: storageBufferSize,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  })
+  });
 
-  const staticStorageValues = new Float32Array(staticStorageBufferSize / 4);
   const storageValues = new Float32Array(storageBufferSize / 4);
 
   const kColorOffset = 0;
@@ -120,8 +113,7 @@ async function mainUseUniform() {
 
   const kScaleOffset = 0;
 
-  const objectInfos = [];
-
+  const staticStorageValues = new Float32Array(staticStorageBufferSize / 4);
   for (let i = 0; i < kNumObjects; ++i) {
     const staticOffset = i * (staticStorageUnitSize / 4);
 
@@ -139,8 +131,20 @@ async function mainUseUniform() {
       scale: rand(0.2, 0.5),
     });
   }
-
   device.queue.writeBuffer(staticStorageBuffer, 0, staticStorageValues);
+
+  // setup a storage buffer with vertex data
+  const { vertexData, numVertices } = createCircleVertices({
+    radius: 0.5,
+    innerRadius: 0.25,
+  });
+  const vertexStorageBuffer = device.createBuffer({
+    label: "storage buffer vertices",
+    size: vertexData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  device.queue.writeBuffer(vertexStorageBuffer, 0, vertexData);
 
   const bindGroup = device.createBindGroup({
     label: `bind group for objects`,
@@ -148,6 +152,7 @@ async function mainUseUniform() {
     entries: [
       { binding: 0, resource: { buffer: staticStorageBuffer } },
       { binding: 1, resource: { buffer: storageBuffer } },
+      { binding: 2, resource: { buffer: vertexStorageBuffer } },
     ],
   });
 
@@ -184,7 +189,7 @@ async function mainUseUniform() {
     device.queue.writeBuffer(storageBuffer, 0, storageValues);
 
     pass.setBindGroup(0, bindGroup);
-    pass.draw(3, kNumObjects); // call our vertex shader 3 times for each instance
+    pass.draw(numVertices, kNumObjects); // call our vertex shader 3 times for each instance
 
     pass.end();
 
@@ -214,6 +219,57 @@ async function mainUseUniform() {
 
 function fail(msg) {
   alert(msg);
+}
+
+function createCircleVertices({
+  radius = 1,
+  numSubdivisions = 24,
+  innerRadius = 0,
+  startAngle = 0,
+  endAngle = Math.PI * 2,
+} = {}) {
+  // 2 triangles per subdivision, 3 verts per tri, 2 values (xy) each.
+  const numVertices = numSubdivisions * 3 * 2;
+  const vertexData = new Float32Array(numSubdivisions * 2 * 3 * 2);
+
+  let offset = 0;
+  const addVertex = (x, y) => {
+    vertexData[offset++] = x;
+    vertexData[offset++] = y;
+  };
+
+  // 2 vertices per subdivision
+  //
+  // 0--1 4
+  // | / /|
+  // |/ / |
+  // 2 3--5
+  for (let i = 0; i < numSubdivisions; ++i) {
+    const angle1 =
+      startAngle + ((i + 0) * (endAngle - startAngle)) / numSubdivisions;
+    const angle2 =
+      startAngle + ((i + 1) * (endAngle - startAngle)) / numSubdivisions;
+
+    const c1 = Math.cos(angle1);
+    const s1 = Math.sin(angle1);
+    const c2 = Math.cos(angle2);
+    const s2 = Math.sin(angle2);
+
+    // first triangle
+    addVertex(c1 * radius, s1 * radius);
+    addVertex(c2 * radius, s2 * radius);
+    addVertex(c1 * innerRadius, s1 * innerRadius);
+
+    // second triangle
+    addVertex(c1 * innerRadius, s1 * innerRadius);
+    addVertex(c2 * radius, s2 * radius);
+    addVertex(c2 * innerRadius, s2 * innerRadius);
+  }
+
+  return {
+    vertexData,
+    numVertices,
+  };
 }
 
 export default mainUseUniform;
