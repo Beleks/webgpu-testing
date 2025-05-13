@@ -42,25 +42,25 @@ async function mainUseUniform() {
         position: vec2f,
       }
       
-      struct VSOutput {
-        @builtin(position) position: vec4f,
-        @location(0) color: vec4f,
-      }
+//      struct VSOutput {
+//        @builtin(position) position: vec4f,
+//        @location(0) color: vec4f,
+//      }
 
       @group(0) @binding(0) var<storage, read> ourStructs: array<OurStruct>;
       @group(0) @binding(1) var<storage, read> otherStructs: array<OtherStruct>;
-      @group(0) @binding(3) var<storage, read> pos: array<Vertex>;
+//      @group(0) @binding(3) var<storage, read> pos: array<Vertex>;
       
 
       @vertex fn vs(
         @builtin(vertex_index) vertexIndex : u32,
         @builtin(instance_index) instanceIndex : u32
       ) -> VSOutput {
-//        let pos = array(
-//          vec2f( 0.0,  0.5),  // top center
-//          vec2f(-0.5, -0.5),  // bottom left
-//          vec2f( 0.5, -0.5)   // bottom right
-//        );
+        let pos = array(
+          vec2f( 0.0,  0.5),  // top center
+          vec2f(-0.5, -0.5),  // bottom left
+          vec2f( 0.5, -0.5)   // bottom right
+        );
 
         let otherStruct = otherStructs[instanceIndex];
         let ourStruct = ourStructs[instanceIndex];
@@ -89,63 +89,67 @@ async function mainUseUniform() {
     },
   });
 
-  // create 2 buffers for the uniform values
-  const staticUniformBufferSize =
+  const kNumObjects = 100;
+
+  // create 2 storage buffers
+  const staticStorageUnitSize =
     4 * 4 + // color is 4 32bit floats (4bytes each)
     2 * 4 + // offset is 2 32bit floats (4bytes each)
     2 * 4; // padding
-  const uniformBufferSize = 2 * 4; // scale is 2 32bit floats (4bytes each)
+  const storageUnitSize = 2 * 4; // scale is 2 32bit floats (4bytes each)
+  const staticStorageBufferSize = staticStorageUnitSize * kNumObjects;
+  const storageBufferSize = storageUnitSize * kNumObjects;
 
-  // offsets to the various uniform values in float32 indices
+  const staticStorageBuffer = device.createBuffer({
+    label: `static storage for objects`,
+    size: staticStorageBufferSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  const storageBuffer = device.createBuffer({
+    label: `changing storage for objects`,
+    size: storageBufferSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  })
+
+  const staticStorageValues = new Float32Array(staticStorageBufferSize / 4);
+  const storageValues = new Float32Array(storageBufferSize / 4);
+
   const kColorOffset = 0;
   const kOffsetOffset = 4;
 
   const kScaleOffset = 0;
 
-  const kNumObjects = 100;
   const objectInfos = [];
 
   for (let i = 0; i < kNumObjects; ++i) {
-    const staticUniformBuffer = device.createBuffer({
-      label: `static uniforms for obj: ${i}`,
-      size: staticUniformBufferSize,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    const staticOffset = i * (staticStorageUnitSize / 4);
 
-    // These are only set once so set them now
-    {
-      const uniformValues = new Float32Array(staticUniformBufferSize / 4);
-      uniformValues.set([rand(), rand(), rand(), 1], kColorOffset); // set the color
-      uniformValues.set([rand(-0.9, 0.9), rand(-0.9, 0.9)], kOffsetOffset); // set the offset
-
-      // copy these values to the GPU
-      device.queue.writeBuffer(staticUniformBuffer, 0, uniformValues);
-    }
-
-    // create a typedarray to hold the values for the uniforms in JavaScript
-    const uniformValues = new Float32Array(uniformBufferSize / 4);
-    const uniformBuffer = device.createBuffer({
-      label: `changing uniforms for obj: ${i}`,
-      size: uniformBufferSize,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    const bindGroup = device.createBindGroup({
-      label: `bind group for obj: ${i}`,
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: staticUniformBuffer } },
-        { binding: 1, resource: { buffer: uniformBuffer } },
-      ],
-    });
+    // These are only set once
+    staticStorageValues.set(
+      [rand(), rand(), rand(), 1],
+      staticOffset + kColorOffset,
+    ); // set the color
+    staticStorageValues.set(
+      [rand(-0.9, 0.9), rand(-0.9, 0.9)],
+      staticOffset + kOffsetOffset,
+    ); // set the offset
 
     objectInfos.push({
       scale: rand(0.2, 0.5),
-      uniformBuffer,
-      uniformValues,
-      bindGroup,
     });
   }
+
+  device.queue.writeBuffer(staticStorageBuffer, 0, staticStorageValues);
+
+  const bindGroup = device.createBindGroup({
+    label: `bind group for objects`,
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: staticStorageBuffer } },
+      { binding: 1, resource: { buffer: storageBuffer } },
+    ],
+  });
 
   const renderPassDescriptor = {
     label: "our basic canvas renderPass",
@@ -174,27 +178,14 @@ async function mainUseUniform() {
     const aspect = canvas.width / canvas.height;
 
     objectInfos.forEach(({ scale }, ndx) => {
-      const offset = ndx * (changingUnitSize / 4);
+      const offset = ndx * (storageUnitSize / 4);
       storageValues.set([scale / aspect, scale], offset + kScaleOffset); // set the scale
     });
-
     device.queue.writeBuffer(storageBuffer, 0, storageValues);
 
     pass.setBindGroup(0, bindGroup);
     pass.draw(3, kNumObjects); // call our vertex shader 3 times for each instance
 
-    // for (const {
-    //   scale,
-    //   bindGroup,
-    //   uniformBuffer,
-    //   uniformValues,
-    // } of objectInfos) {
-    //   uniformValues.set([scale / aspect, scale], kScaleOffset); // set the scale
-    //   device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
-    //
-    //   pass.setBindGroup(0, bindGroup);
-    //   pass.draw(3);
-    // }
     pass.end();
 
     const commandBuffer = encoder.finish();
