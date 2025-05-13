@@ -37,25 +37,42 @@ async function mainUseUniform() {
       struct OtherStruct {
         scale: vec2f,
       };
-
-      @group(0) @binding(0) var<uniform> ourStruct: OurStruct;
-      @group(0) @binding(1) var<uniform> otherStruct: OtherStruct;
-
-      @vertex fn vs(
-        @builtin(vertex_index) vertexIndex : u32
-      ) -> @builtin(position) vec4f {
-        let pos = array(
-          vec2f( 0.0,  0.5),  // top center
-          vec2f(-0.5, -0.5),  // bottom left
-          vec2f( 0.5, -0.5)   // bottom right
-        );
-
-        return vec4f(
-          pos[vertexIndex] * otherStruct.scale + ourStruct.offset, 0.0, 1.0);
+      
+      struct Vertex {
+        position: vec2f,
+      }
+      
+      struct VSOutput {
+        @builtin(position) position: vec4f,
+        @location(0) color: vec4f,
       }
 
-      @fragment fn fs() -> @location(0) vec4f {
-        return ourStruct.color;
+      @group(0) @binding(0) var<storage, read> ourStructs: array<OurStruct>;
+      @group(0) @binding(1) var<storage, read> otherStructs: array<OtherStruct>;
+      @group(0) @binding(3) var<storage, read> pos: array<Vertex>;
+      
+
+      @vertex fn vs(
+        @builtin(vertex_index) vertexIndex : u32,
+        @builtin(instance_index) instanceIndex : u32
+      ) -> VSOutput {
+//        let pos = array(
+//          vec2f( 0.0,  0.5),  // top center
+//          vec2f(-0.5, -0.5),  // bottom left
+//          vec2f( 0.5, -0.5)   // bottom right
+//        );
+
+        let otherStruct = otherStructs[instanceIndex];
+        let ourStruct = ourStructs[instanceIndex];
+        
+        var vsOut: VSOutput;
+        vsOut.position = vec4f(pos[vertexIndex] * otherStruct.scale + ourStruct.offset, 0.0, 1.0);
+        vsOut.color = ourStruct.color;
+        return vsOut;
+      }
+
+      @fragment fn fs(vsOut: VSOutput) -> @location(0) vec4f {
+        return vsOut.color;
       }
     `,
   });
@@ -156,18 +173,28 @@ async function mainUseUniform() {
     // Set the uniform values in our JavaScript side Float32Array
     const aspect = canvas.width / canvas.height;
 
-    for (const {
-      scale,
-      bindGroup,
-      uniformBuffer,
-      uniformValues,
-    } of objectInfos) {
-      uniformValues.set([scale / aspect, scale], kScaleOffset); // set the scale
-      device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
+    objectInfos.forEach(({ scale }, ndx) => {
+      const offset = ndx * (changingUnitSize / 4);
+      storageValues.set([scale / aspect, scale], offset + kScaleOffset); // set the scale
+    });
 
-      pass.setBindGroup(0, bindGroup);
-      pass.draw(3); // call our vertex shader 3 times
-    }
+    device.queue.writeBuffer(storageBuffer, 0, storageValues);
+
+    pass.setBindGroup(0, bindGroup);
+    pass.draw(3, kNumObjects); // call our vertex shader 3 times for each instance
+
+    // for (const {
+    //   scale,
+    //   bindGroup,
+    //   uniformBuffer,
+    //   uniformValues,
+    // } of objectInfos) {
+    //   uniformValues.set([scale / aspect, scale], kScaleOffset); // set the scale
+    //   device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
+    //
+    //   pass.setBindGroup(0, bindGroup);
+    //   pass.draw(3);
+    // }
     pass.end();
 
     const commandBuffer = encoder.finish();
