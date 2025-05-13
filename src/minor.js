@@ -1,4 +1,6 @@
 import mainUseUniform from "./mainUseUniform.js";
+import init2dgrid from "./grid2d.js";
+import testDraw from "./testDraw.js";
 
 async function main() {
   const adapter = await navigator.gpu?.requestAdapter();
@@ -155,4 +157,6 @@ function fail(msg) {
 
 // main();
 
-mainUseUniform();
+// mainUseUniform();
+
+init2dgrid();
