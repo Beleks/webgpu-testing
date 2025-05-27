@@ -6,183 +6,334 @@ async function initGrid2d() {
   const context = canvas.getContext("webgpu");
 
   // Настройка формата и размера канваса
-  const format = navigator.gpu.getPreferredCanvasFormat();
-  context.configure({ device, format, alphaMode: "premultiplied" });
-
-  // Размер сетки (количество ячеек)
-  const gridSize = 10;
-  // Масштаб (изначальный)
-  let scale = 1.0;
-  // Позиция камеры (смещение)
-  let cameraPos = { x: 0, y: 0 };
-  // Выделенные ячейки (Set для хранения индексов)
-  const selectedCells = new Set();
-
-  // Обработчик событий мыши
-  canvas.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const zoomSpeed = 0.1;
-    scale += e.deltaY * -0.001 * zoomSpeed;
-    scale = Math.max(0.1, Math.min(scale, 5.0)); // Ограничиваем масштаб
+  const presentationFormat = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({
+    device: device,
+    format: presentationFormat,
+    alphaMode: 'opaque'
   });
 
-  // Обработчик клика (выделение ячейки)
-  canvas.addEventListener("click", (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-
-    // Преобразуем координаты мыши в координаты сетки
-    const cellSize = (Math.min(canvas.width, canvas.height) / gridSize) * scale;
-    const gridX = Math.floor((mouseX - cameraPos.x) / cellSize);
-    const gridY = Math.floor((mouseY - cameraPos.y) / cellSize);
-
-    // Добавляем/удаляем выделение
-    const cellIndex = gridY * gridSize + gridX;
-    if (selectedCells.has(cellIndex)) {
-      selectedCells.delete(cellIndex);
-    } else {
-      selectedCells.add(cellIndex);
-    }
-  });
-
-  // Шейдеры WGSL
+  // --- Шейдеры (WGSL) ---
   const shaderModule = device.createShaderModule({
     //language=wgsl
     code: `
-      struct VertexInput {
-        @location(0) position: vec2f,
-        @builtin(instance_index) instance: u32,
-      };
+      struct Uniforms {
+          // Поля упорядочены для избежания неожиданного заполнения (padding)
+          // и соответствия размеру 40 байт
+          line_color: vec4<f32>,        // смещение 0, размер 16
+          scale_factor_xy: vec2<f32>,   // смещение 16, размер 8 (масштаб ячейки в пикселях)
+          grid_origin_pixels_xy: vec2<f32>, // смещение 24, размер 8 (положение (0,0) сетки в пикселях холста)
+          viewport_size_xy: vec2<f32>   // смещение 32, размер 8 (размеры холста)
+          // Общий размер: 16 + 8 + 8 + 8 = 40 байт
+      }
+
+      @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
       struct VertexOutput {
-        @builtin(position) position: vec4f,
-        @location(0) cellIndex: u32,
+          @builtin(position) position: vec4<f32>,
       };
-            
-      struct GridUniforms {
-        gridSize: u32,
-        scale: f32,
-        cameraPos: vec2f,
-      };
-
-      @group(0) @binding(0) var<uniform> gridUniforms: GridUniforms;
 
       @vertex
-      fn vertexMain(input: VertexInput) -> VertexOutput {
-        let cellSize = 2.0 / f32(gridUniforms.gridSize) * gridUniforms.scale;
-        let cellPadding = cellSize * 0.05; // Отступ между ячейками
+      fn vs_main(@location(0) logical_pos: vec2<f32>) -> VertexOutput {
+          var out: VertexOutput;
 
-        let cellX = f32(input.instance % gridUniforms.gridSize);
-        let cellY = f32(input.instance / gridUniforms.gridSize);
+          // 1. Преобразование из логических координат сетки в пиксельные координаты на холсте
+          let pixel_pos = logical_pos * uniforms.scale_factor_xy + uniforms.grid_origin_pixels_xy;
 
-        var pos = input.position * (cellSize - cellPadding) + vec2f(cellX, cellY) * cellSize;
-        pos = pos * 2.0 - 1.0; // Переводим в NDC (от -1 до 1)
-        pos += gridUniforms.cameraPos; // Применяем смещение камеры
+          // 2. Преобразование из пиксельных координат холста в нормализованные координаты устройства (NDC)
+          // NDC X: -1 (слева) до +1 (справа)
+          // NDC Y: -1 (снизу) до +1 (сверху)
+          let ndc_x = (pixel_pos.x / uniforms.viewport_size_xy.x) * 2.0 - 1.0;
+          let ndc_y = (1.0 - (pixel_pos.y / uniforms.viewport_size_xy.y)) * 2.0; // Y инвертируется, т.к. (0,0) холста вверху слева
 
-        var output: VertexOutput;
-        output.position = vec4f(pos, 0.0, 1.0);
-        output.cellIndex = input.instance;
-        return output;
+          out.position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+          return out;
       }
 
       @fragment
-      fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
-        // Цвет по умолчанию (серый)
-        var color = vec4f(0.7, 0.7, 0.7, 1.0);
-
-        // Если ячейка выделена — красим в красный
-        if (input.cellIndex == 42) { // Пример: выделяем ячейку 42
-            color = vec4f(1.0, 0.0, 0.0, 1.0);
-        }
-
-        return color;
+      fn fs_main() -> @location(0) vec4<f32> {
+          return uniforms.line_color;
       }
-      `,
+    `
   });
 
-  // Создаём буфер для uniform-переменных
-  const uniformBuffer = device.createBuffer({
-    size: 16 + 4 + 8, // gridSize (u32) + scale (f32) + cameraPos (vec2f)
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-
-  // Рендер-пайплайн
+  // --- Конвейер рендеринга ---
   const pipeline = device.createRenderPipeline({
-    layout: "auto",
+    layout: 'auto',
     vertex: {
       module: shaderModule,
-      entryPoint: "vertexMain",
-      buffers: [
-        {
-          arrayStride: 2 * 4, // vec2f
-          attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }],
-        },
-      ],
+      entryPoint: 'vs_main',
+      buffers: [{ // Описание одного буфера вершин
+        arrayStride: 2 * 4, // 2 компонента float32 (x, y) = 8 байт
+        attributes: [{
+          shaderLocation: 0, // соответствует @location(0) в vs_main
+          offset: 0,
+          format: 'float32x2'
+        }]
+      }]
     },
     fragment: {
       module: shaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format }],
+      entryPoint: 'fs_main',
+      targets: [{
+        format: presentationFormat
+      }]
     },
-    primitive: { topology: "triangle-list" },
+    primitive: {
+      topology: 'line-list' // Рисуем список линий
+    }
   });
 
-  // Данные вершин (квадрат)
-  const vertexData = new Float32Array([
-    // Треугольник 1
-    0.0, 0.0, 1.0, 0.0, 0.0, 1.0,
-    // Треугольник 2
-    1.0, 0.0, 1.0, 1.0, 0.0, 1.0,
-  ]);
-  const vertexBuffer = device.createBuffer({
-    size: vertexData.byteLength,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  // --- Uniform-буфер ---
+  // Размер соответствует структуре Uniforms в шейдере (40 байт)
+  const uniformBufferSize = (4 + 2 + 2 + 2) * 4; // 10 float * 4 байта/float = 40 байт
+  const uniformBuffer = device.createBuffer({
+    size: uniformBufferSize,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
   });
-  device.queue.writeBuffer(vertexBuffer, 0, vertexData);
 
-  // Bind group
+  // --- Bind Group ---
   const bindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+    layout: pipeline.getBindGroupLayout(0), // Получаем layout из конвейера
+    entries: [{
+      binding: 0, // соответствует @group(0) @binding(0)
+      resource: {
+        buffer: uniformBuffer
+      }
+    }]
   });
 
-  // Основной цикл рендеринга
-  function render() {
-    const encoder = device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: context.getCurrentTexture().createView(),
-          clearValue: [0.1, 0.1, 0.1, 1.0],
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-    });
+  // --- Параметры сетки и управления ---
+  const baseCellSize = 50.0; // Базовый логический размер ячейки
+  let currentZoom = 1.0;
+  let panOffset = { x: 0.0, y: 0.0 }; // Смещение панорамирования в пикселях
 
-    // Обновляем uniform-буфер
-    const uniformData = new Float32Array([
-      gridSize, // gridSize (u32)
-      scale, // scale (f32)
-      cameraPos.x,
-      cameraPos.y, // cameraPos (vec2f)
-    ]);
-    device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+  const majorLineColor = [0.5, 0.5, 0.5, 1.0]; // Серый для основных линий
+  const minorLineColor = [0.3, 0.3, 0.3, 1.0]; // Темно-серый для второстепенных
+  const sectionInterval = 5; // Каждая 5-я линия - основная
 
-    // Рисуем сетку
-    pass.setPipeline(pipeline);
-    pass.setVertexBuffer(0, vertexBuffer);
-    pass.setBindGroup(0, bindGroup);
-    pass.draw(6, gridSize * gridSize); // 6 вершин на квадрат, gridSize² инстансов
-    pass.end();
+  let majorLineVertices = [];
+  let minorLineVertices = [];
+  let majorVertexBuffer, minorVertexBuffer;
 
-    device.queue.submit([encoder.finish()]);
-    requestAnimationFrame(render);
+  function generateGridVertices() {
+    majorLineVertices = [];
+    minorLineVertices = [];
+
+    const effectiveCellSize = baseCellSize * currentZoom;
+    if (effectiveCellSize < 2) return; // Слишком мелкая сетка, не генерируем
+
+    // Рассчитываем видимый диапазон логических координат
+    // grid_origin_pixels_xy - это где на холсте будет логическая точка (0,0) сетки.
+    // Начальное положение grid_origin (до панорамирования) - центр холста.
+    const initialGridOriginX = canvas.width / 2;
+    const initialGridOriginY = canvas.height / 2;
+
+    const viewMinLogicalX = (- (initialGridOriginX + panOffset.x)) / effectiveCellSize - 5; // c запасом
+    const viewMaxLogicalX = (canvas.width - (initialGridOriginX + panOffset.x)) / effectiveCellSize + 5;
+    const viewMinLogicalY = (- (initialGridOriginY + panOffset.y)) / effectiveCellSize - 5;
+    const viewMaxLogicalY = (canvas.height - (initialGridOriginY + panOffset.y)) / effectiveCellSize + 5;
+
+
+    // Вертикальные линии (логические X координаты)
+    for (let lx = Math.floor(viewMinLogicalX); lx <= Math.ceil(viewMaxLogicalX); lx++) {
+      const lineEndpoints = [
+        lx, viewMinLogicalY - 5, // выход за пределы для красоты
+        lx, viewMaxLogicalY + 5,
+      ];
+      if (lx % sectionInterval === 0) {
+        majorLineVertices.push(...lineEndpoints);
+      } else {
+        minorLineVertices.push(...lineEndpoints);
+      }
+    }
+
+    // Горизонтальные линии (логические Y координаты)
+    for (let ly = Math.floor(viewMinLogicalY); ly <= Math.ceil(viewMaxLogicalY); ly++) {
+      const lineEndpoints = [
+        viewMinLogicalX - 5, ly,
+        viewMaxLogicalX + 5, ly,
+      ];
+      if (ly % sectionInterval === 0) {
+        majorLineVertices.push(...lineEndpoints);
+      } else {
+        minorLineVertices.push(...lineEndpoints);
+      }
+    }
   }
 
-  // Запускаем рендеринг
-  render();
+
+  function updateVertexBuffers() {
+    generateGridVertices();
+
+    // Уничтожаем старые буферы, если они существуют
+    if (majorVertexBuffer) majorVertexBuffer.destroy();
+    if (minorVertexBuffer) minorVertexBuffer.destroy();
+
+    majorVertexBuffer = device.createBuffer({
+      size: Math.max(16, majorLineVertices.length * 4), // float32 занимает 4 байта
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: false // Данные будут загружены через writeBuffer
+    });
+    if (majorLineVertices.length > 0) {
+      device.queue.writeBuffer(majorVertexBuffer, 0, new Float32Array(majorLineVertices));
+    }
+
+
+    minorVertexBuffer = device.createBuffer({
+      size: Math.max(16, minorLineVertices.length * 4),
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: false
+    });
+    if (minorLineVertices.length > 0) {
+      device.queue.writeBuffer(minorVertexBuffer, 0, new Float32Array(minorLineVertices));
+    }
+  }
+
+  updateVertexBuffers(); // Первоначальная генерация
+
+  // --- Интерактивность ---
+  canvas.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    const zoomIntensity = 0.1;
+    const scroll = event.deltaY < 0 ? 1 : -1;
+    const zoomFactor = 1 + scroll * zoomIntensity;
+
+    const oldZoom = currentZoom;
+    currentZoom *= zoomFactor;
+    currentZoom = Math.max(0.05, Math.min(currentZoom, 20.0)); // Ограничение масштаба
+
+    // Масштабирование относительно курсора
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = event.clientX - rect.left; // Координаты мыши относительно холста
+    const mouseY = event.clientY - rect.top;
+
+    // Логические координаты точки под курсором до масштабирования
+    // scale_factor_xy = baseCellSize * oldZoom
+    // grid_origin_pixels_xy = canvas_center + panOffset
+    // pixel_pos = logical_pos * scale_factor_xy + grid_origin_pixels_xy
+    // logical_pos = (pixel_pos - grid_origin_pixels_xy) / scale_factor_xy
+    const logicalMouseX = (mouseX - (canvas.width / 2 + panOffset.x)) / (baseCellSize * oldZoom);
+    const logicalMouseY = (mouseY - (canvas.height / 2 + panOffset.y)) / (baseCellSize * oldZoom);
+
+    // Новое смещение панорамирования, чтобы логическая точка осталась под курсором
+    // panOffset.x = mouseX - canvas.width/2 - logicalMouseX * (baseCellSize * currentZoom)
+    panOffset.x = mouseX - canvas.width / 2 - logicalMouseX * (baseCellSize * currentZoom);
+    panOffset.y = mouseY - canvas.height / 2 - logicalMouseY * (baseCellSize * currentZoom);
+
+
+    updateVertexBuffers();
+  });
+
+  let isPanning = false;
+  let lastMousePos = { x: 0, y: 0 };
+  canvas.addEventListener('mousedown', (event) => {
+    if (event.button === 0) { // Только ЛКМ
+      isPanning = true;
+      lastMousePos = { x: event.clientX, y: event.clientY };
+    }
+  });
+  canvas.addEventListener('mousemove', (event) => {
+    if (isPanning) {
+      const dx = event.clientX - lastMousePos.x;
+      const dy = event.clientY - lastMousePos.y;
+      panOffset.x += dx;
+      panOffset.y += dy;
+      lastMousePos = { x: event.clientX, y: event.clientY };
+      updateVertexBuffers();
+    }
+  });
+  canvas.addEventListener('mouseup', () => { isPanning = false; });
+  canvas.addEventListener('mouseleave', () => { isPanning = false; });
+
+
+  // --- Цикл рендеринга ---
+  function frame() {
+    if (!canvas) return; // Если холст удален
+
+    const effectiveCellSize = baseCellSize * currentZoom;
+
+    // Данные для uniform-буфера
+    // Порядок должен точно соответствовать структуре Uniforms в шейдере!
+    const uniformValues = new Float32Array([
+      // line_color (будет перезаписан для каждого типа линий)
+      0, 0, 0, 0, // Временный цвет, будет перезаписан ниже
+      // scale_factor_xy
+      effectiveCellSize, effectiveCellSize,
+      // grid_origin_pixels_xy (центр холста + смещение панорамирования)
+      canvas.width / 2 + panOffset.x, canvas.height / 2 + panOffset.y,
+      // viewport_size_xy
+      canvas.width, canvas.height
+    ]);
+
+
+    const commandEncoder = device.createCommandEncoder();
+    const textureView = context.getCurrentTexture().createView();
+
+    const renderPassDescriptor = {
+      colorAttachments: [{
+        view: textureView,
+        clearValue: { r: 0.1, g: 0.1, b: 0.12, a: 1.0 }, // Цвет фона
+        loadOp: 'clear',
+        storeOp: 'store'
+      }]
+    };
+    const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+    passEncoder.setPipeline(pipeline);
+    passEncoder.setBindGroup(0, bindGroup);
+
+    // Рисуем второстепенные линии
+    if (minorLineVertices.length > 0) {
+      uniformValues.set(minorLineColor, 0); // Устанавливаем цвет для второстепенных линий в начало Float32Array
+      device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
+      passEncoder.setVertexBuffer(0, minorVertexBuffer);
+      passEncoder.draw(minorLineVertices.length / 2, 1, 0, 0); // Делим на 2, т.к. 2 float (x,y) на вершину
+    }
+
+    // Рисуем основные линии
+    if (majorLineVertices.length > 0) {
+      uniformValues.set(majorLineColor, 0); // Устанавливаем цвет для основных линий
+      device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
+      passEncoder.setVertexBuffer(0, majorVertexBuffer);
+      passEncoder.draw(majorLineVertices.length / 2, 1, 0, 0);
+    }
+
+    passEncoder.end();
+    device.queue.submit([commandEncoder.finish()]);
+
+    requestAnimationFrame(frame);
+  }
+
+  // Обработка изменения размера окна
+  const resizeObserver = new ResizeObserver(entries => {
+    for (const entry of entries) { // Обычно одна запись
+      const newWidth = Math.max(1, Math.floor(entry.contentBoxSize[0].inlineSize));
+      const newHeight = Math.max(1, Math.floor(entry.contentBoxSize[0].blockSize));
+
+      if (canvas.width !== newWidth || canvas.height !== newHeight) {
+        canvas.width = newWidth;
+        canvas.height = newHeight;
+
+        // Важно: переконфигурировать контекст при изменении размера холста
+        context.configure({
+          device: device,
+          format: presentationFormat,
+          alphaMode: 'opaque'
+        });
+        updateVertexBuffers(); // Перегенерировать вершины для нового размера
+      }
+    }
+  });
+
+  try {
+    resizeObserver.observe(canvas);
+  } catch(e) {
+    console.error("ResizeObserver не поддерживается или произошла ошибка:", e);
+    // Можно добавить простой window.onresize как fallback, но он менее производителен
+  }
+
+
+  requestAnimationFrame(frame); // Запуск цикла рендеринга
 }
 
 export default initGrid2d;
